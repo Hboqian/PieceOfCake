@@ -6,6 +6,7 @@ import numpy as np
 import math
 import traceback
 import matplotlib.pyplot as plt
+import signal
 
 from shapely import points, centroid
 
@@ -16,16 +17,16 @@ from constants import *
 import constants
 from utils import *
 from players.default_player import Player as DefaultPlayer
-# from players.G2_Player import G2_Player
-# from players.g6_player import Player as G6_Player
-# from players.g1_player import Player as G1_Player
-# from players.g8_player import G8_Player
-# from players.group10_player import Player as G10_Player
-# from players.player_7 import Player as G7_Player
+from players.G2_Player import G2_Player
+from players.g6_player import Player as G6_Player
+from players.g1_player import Player as G1_Player
+from players.g8_player import G8_Player
+from players.group10_player import Player as G10_Player
+from players.player_7 import Player as G7_Player
 from players.g9_player import Player as G9_Player
-# from players.g5_player import Player as G5_Player
-# from players.group_3 import Player as G3_Player
-# from players.g4_player import Player as G4_Player
+from players.g5_player import Player as G5_Player
+from players.group_3 import Player as G3_Player
+from players.g4_player import Player as G4_Player
 from shapely.geometry import Polygon, LineString, Point
 from shapely.ops import split
 import tkinter as tk
@@ -99,16 +100,19 @@ class PieceOfCakeGame:
         self.cur_pos = None
         self.prev_pos = None
         self.penalty = None
+        self.solution_length = None
         self.polygon_list = None
         self.goal_reached = False
         self.assignment = None
         self.x_offset = 50
         self.y_offset = 50
         self.cake_cuts = []
+        self.cake_cuts1 = []
         self.turns = 0
         self.valid_moves = 0
         self.timeout_warning_count = 0
         self.max_turns = 1e9
+        self.file = args.requests
 
         self.add_player(args.player)
         self.initialize(args.requests)
@@ -129,10 +133,17 @@ class PieceOfCakeGame:
 
             start_time = 0
             is_timeout = False
+            if self.use_timeout:
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(int(self.player_time))
             try:
                 start_time = time.time()
                 player = player_class(rng=self.rng, logger=self.get_player_logger(player_name),
                                       precomp_dir=precomp_dir, tolerance=self.tolerance)
+                player_time_taken = time.time() - start_time
+                self.player_time -= player_time_taken
+                if self.use_timeout:
+                    signal.alarm(0)  # Clear alarm
             except TimeoutException:
                 is_timeout = True
                 player = None
@@ -182,7 +193,7 @@ class PieceOfCakeGame:
             # If no requests are provided, generate requests uniformly from the range 10 to 100
             self.generate_requests()
 
-        print("Requests generated successfully...")
+        # print("Requests generated successfully...")
 
         # Uncomment to save the maze in a json file
         # data = {
@@ -224,8 +235,8 @@ class PieceOfCakeGame:
 
     def validate_requests(self):
         # Check the sum of requests should be less than cake size.
-        print("Requests: ", self.requests)
-        print("Sum of requests: ", np.sum(self.requests))
+        # print("Requests: ", self.requests)
+        # print("Sum of requests: ", np.sum(self.requests))
         if np.sum(self.requests) > 10000:
             return False
 
@@ -243,7 +254,7 @@ class PieceOfCakeGame:
         self.cake_width = round(self.cake_len * 1.6, 2)
 
         self.scale = 700/self.cake_len
-        print("Cake size: ", self.cake_len * self.cake_width)
+        # print("Cake size: ", self.cake_len * self.cake_width)
         return True
 
     def resume(self):
@@ -310,10 +321,19 @@ class PieceOfCakeGame:
         if (not self.player_timeout) and self.timeout_warning_count < 3:
             player_start = time.time()
             try:
+                if self.use_timeout:
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(int(self.player_time))
                 # Call the player's move function for turn on this move
                 returned_action = self.player.move(
                     current_percept=before_state
                 )
+                if self.use_timeout:
+                    signal.alarm(0)
+            except TimeoutException:
+                self.player_timeout = True
+                self.logger.error(
+                    "Timeout {} since {:.3f}s reached.".format(self.player_name, constants.timeout))
             except Exception as e:
                 print(f"Exception in player code: {e}")
                 traceback.print_exc()
@@ -321,36 +341,36 @@ class PieceOfCakeGame:
 
             player_time_taken = time.time() - player_start
             self.logger.debug("Player {} took {:.3f}s".format(self.player_name, player_time_taken))
-            if player_time_taken > 10:
-                self.logger.warning("Player {} took {:.3f}s".format(self.player_name, player_time_taken))
-                self.timeout_warning_count += 1
 
             self.player_time -= player_time_taken
             if self.player_time <= 0:
                 self.player_timeout = True
                 returned_action = None
 
-        print("Move received: ", returned_action)
+        # print("Move received: ", returned_action)
         if self.check_action(returned_action):
             if self.check_and_apply_action(returned_action):
-                print("Move Accepted! New position", self.cur_pos)
+                # print("Move Accepted! New position", self.cur_pos)
                 self.logger.debug("Received move from {}".format(self.player_name))
                 self.valid_moves += 1
             else:
                 self.logger.info("Invalid move from {} as it does not follow the rules".format(self.player_name))
         else:
-            print("Invalid move")
+            # print("Invalid move")
             self.logger.info("Invalid move from {} as it doesn't follow the return format".format(self.player_name))
 
         if self.use_gui:
             self.draw_cake()
 
 
-        print("Turn {} complete".format(self.turns))
+        # print("Turn {} complete".format(self.turns))
 
         if self.penalty is not None:
             self.game_state = "over"
-            print("Assignment completed!\n\n Total Penalty: {}\n".format(self.penalty))
+            # Add results to a csv file
+            print("Player name: {}\nTolerance: {}\nFile: {}\nPenalty: {}\n Total Length: {}\nTime taken: {}\n".format(self.player_name, self.tolerance, self.file, self.penalty, self.solution_length, constants.timeout - self.player_time))
+            with open(self.player_name+".csv", "a") as f:
+                f.write("{},{},{},{},{},{}\n".format(self.player_name, self.tolerance, self.file, self.penalty, self.solution_length, constants.timeout - self.player_time))
             self.end_time = time.time()
             print("\nTime taken: {}\n".format(self.end_time - self.start_time))
             return
@@ -366,6 +386,11 @@ class PieceOfCakeGame:
                 self.play_game()
         else:
             print("Timeout: Pieces not assigned...\n\n")
+            print("Player name: {}\nTolerance: {}\nFile: {}\nPenalty: {}\n Total Length: {}\nTime taken: {}\n".format(
+                self.player_name, self.tolerance, self.file, len(self.requests)*100, 1e8,
+                constants.timeout - self.player_time))
+            with open(self.player_name+".csv", "a") as f:
+                f.write("{},{},{},{},{},{}\n".format(self.player_name, self.tolerance, self.file, self.penalty, 0, constants.timeout - self.player_time))
             self.game_state = "over"
             self.end_time = time.time()
             print("\nTime taken: {}\nValid moves: {}\n".format(self.end_time - self.start_time, self.valid_moves))
@@ -373,10 +398,10 @@ class PieceOfCakeGame:
 
     # Verify the action returned by the player
     def check_action(self, action):
-        print(action)
-        print("Checking action: ", action)
+        # print(action)
+        # print("Checking action: ", action)
         if action is None:
-            print("No action returned")
+            # print("No action returned")
             return False
         if type(action) is not tuple:
             return False
@@ -444,7 +469,7 @@ class PieceOfCakeGame:
                 return False
 
             # If the cut has already been made then it's invalid
-            if self.prev_pos is not None and ((self.prev_pos[0], self.prev_pos[1], cur_x, cur_y) in self.cake_cuts or (cur_x, cur_y, self.prev_pos[0], self.prev_pos[1]) in self.cake_cuts):
+            if self.prev_pos is not None and ((self.prev_pos[0], self.prev_pos[1], cur_x, cur_y) in self.cake_cuts1 or (cur_x, cur_y, self.prev_pos[0], self.prev_pos[1]) in self.cake_cuts1):
                 return False
 
             # Check if the cut is horizontal across the cake boundary
@@ -468,6 +493,8 @@ class PieceOfCakeGame:
             self.polygon_list = newPieces
             self.prev_pos = self.cur_pos
             self.cur_pos = action[1]
+            self.cake_cuts1.append((self.prev_pos[0], self.prev_pos[1],
+                                       self.cur_pos[0], self.cur_pos[1]))
             return True
         elif action[0] == constants.ASSIGN:
             self.penalty = 0
@@ -480,6 +507,9 @@ class PieceOfCakeGame:
                     penalty_percentage = 100 * abs(self.polygon_list[assignment].area - self.requests[request_index])/self.requests[request_index]
                     if penalty_percentage > self.tolerance:
                         self.penalty += penalty_percentage
+            self.solution_length = 0
+            for cut in self.cake_cuts1:
+                self.solution_length += self.euclidean_distance((cut[0], cut[1]), (cut[2], cut[3]))
             self.prev_pos = None
             return True
         return False
